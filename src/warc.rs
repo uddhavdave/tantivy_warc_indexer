@@ -14,6 +14,7 @@ use std::io::Read;
 use tantivy::Document;
 use tantivy::Index;
 use tantivy::IndexWriter;
+use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 #[derive(Debug)]
@@ -125,8 +126,9 @@ pub struct DocJson {
 
 pub async fn extract_records_and_push_to_quickwit(
     mut reader: impl BufRead + Send,
-    tx: tokio::sync::mpsc::UnboundedSender<DocJson>,
+    tx: tokio::sync::mpsc::Sender<DocJson>,
 ) -> io::Result<()> {
+    let mut count = 0;
     while let Some(record) = read_record(&mut reader)? {
         match record.warc_type {
             WARCType::WarcInfo => {
@@ -136,6 +138,10 @@ pub async fn extract_records_and_push_to_quickwit(
                 let body = std::str::from_utf8(&record.payload).expect("convert to utf8 failed");
                 // create a json builder
                 // parse the body into a json object
+                count += 1;
+                if count % 1000 == 0 {
+                    eprintln!(".");
+                }
                 let body = body.to_string();
                 let uri = record
                     .header
@@ -155,7 +161,7 @@ pub async fn extract_records_and_push_to_quickwit(
                     body,
                     date,
                 };
-                tx.send(doc).unwrap();
+                tx.send(doc).await.unwrap();
             }
             _ => {
                 //eprintln!("ignoring record type: {:?}", record.warc_type);
@@ -165,8 +171,8 @@ pub async fn extract_records_and_push_to_quickwit(
     Ok(())
 }
 
-pub async fn send_to_quickwit(mut rx: UnboundedReceiver<DocJson>) {
-    let url = "http://localhost:7280/api/v1/wikipedia/ingest?commit=force";
+pub async fn send_to_quickwit(mut rx: Receiver<DocJson>) {
+    let url = "http://localhost:7280/api/v1/common_crawl/ingest?commit=force";
     while let Some(doc) = rx.recv().await {
         let doc_json = serde_json::to_string(&doc).expect("json serialization failed");
         let client = reqwest::Client::new()
@@ -177,6 +183,7 @@ pub async fn send_to_quickwit(mut rx: UnboundedReceiver<DocJson>) {
         println!("Push status : {status}");
     }
 }
+
 pub fn extract_records_and_add_to_index(
     index: &Index,
     index_writer: &IndexWriter,

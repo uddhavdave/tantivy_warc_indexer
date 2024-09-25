@@ -69,7 +69,7 @@ async fn main() -> Result<(), std::io::Error> {
     println!("Threads: {:?}", nthreads);
     println!("");
 
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<DocJson>();
+    let (tx, rx) = tokio::sync::mpsc::channel::<DocJson>(1000);
 
     let mut numfiles = 0;
     let mut tasks = Vec::new();

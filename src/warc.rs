@@ -2,6 +2,7 @@ use std;
 use std::collections::HashMap;
 use std::io;
 use std::io::BufRead;
+use std::path::PathBuf;
 
 extern crate tantivy;
 use reqwest::header::HeaderMap;
@@ -128,10 +129,11 @@ pub struct DocJson {
 
 pub async fn extract_records_and_push_to_quickwit(
     mut reader: impl BufRead + Send,
-    mut file: File,
+    out_file_path: PathBuf,
 ) -> io::Result<()> {
     let mut count = 0;
     let mut batch = Vec::new();
+    let mut out_file = tokio::fs::File::create_new(out_file_path).await?;
     while let Some(record) = read_record(&mut reader)? {
         if batch.len() == 1000 {
             // send to quickwit
@@ -143,7 +145,8 @@ pub async fn extract_records_and_push_to_quickwit(
             // join on newline
             let blob = docs.join("\n");
             let blob = blob.as_bytes();
-            file.write_all(blob).await.unwrap();
+            out_file.write_all(blob).await.unwrap();
+            out_file.flush().await.unwrap();
             batch.clear();
         }
 

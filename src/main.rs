@@ -93,7 +93,6 @@ async fn main() -> Result<(), std::io::Error> {
         }
         let filename = path.path().clone();
         let out_file_path = PathBuf::from(index_dir).join(filename.file_name().unwrap());
-        let out_file = tokio::fs::File::create_new(out_file_path).await?;
 
         let source_type_clone = source_type.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
@@ -113,7 +112,7 @@ async fn main() -> Result<(), std::io::Error> {
                                         PER_THREAD_BUF_SIZE,
                                         MultiGzDecoder::new(file),
                                     ),
-                                    out_file,
+                                    out_file_path,
                                 )
                                 .await
                                 .unwrap()
@@ -123,7 +122,7 @@ async fn main() -> Result<(), std::io::Error> {
                     } else if extension == OsStr::new("wet") {
                         warc::extract_records_and_push_to_quickwit(
                             &mut io::BufReader::with_capacity(PER_THREAD_BUF_SIZE, file),
-                            out_file,
+                            out_file_path,
                         )
                         .await
                         .unwrap();
@@ -137,6 +136,9 @@ async fn main() -> Result<(), std::io::Error> {
         }))
     }
 
+    for task in tasks {
+        tokio::join!(task).0.unwrap();
+    }
     // let _ = tokio::join!(sender);
     Ok(())
 }

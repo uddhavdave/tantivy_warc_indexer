@@ -80,13 +80,8 @@ async fn main() -> Result<(), std::io::Error> {
     //     send_to_quickwit(rx).await;
     // });
 
-    while let Some(path) = tokio::fs::read_dir(warc_dir)
-        .await
-        .unwrap()
-        .next_entry()
-        .await
-        .unwrap()
-    {
+    let mut dir = tokio::fs::read_dir(warc_dir).await.unwrap();
+    while let Some(path) = dir.next_entry().await.unwrap() {
         numfiles += 1;
         if numfiles < from || numfiles > to {
             continue;
@@ -94,6 +89,7 @@ async fn main() -> Result<(), std::io::Error> {
         let filename = path.path().clone();
         let out_file_path = PathBuf::from(index_dir).join(filename.file_name().unwrap());
 
+        dbg!(&out_file_path);
         let source_type_clone = source_type.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         // let tx_clone = tx.clone();

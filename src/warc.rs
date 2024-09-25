@@ -14,6 +14,8 @@ use std::io::Read;
 use tantivy::Document;
 use tantivy::Index;
 use tantivy::IndexWriter;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -126,10 +128,25 @@ pub struct DocJson {
 
 pub async fn extract_records_and_push_to_quickwit(
     mut reader: impl BufRead + Send,
-    tx: tokio::sync::mpsc::Sender<DocJson>,
+    mut file: File,
 ) -> io::Result<()> {
     let mut count = 0;
+    let mut batch = Vec::new();
     while let Some(record) = read_record(&mut reader)? {
+        if batch.len() == 1000 {
+            // send to quickwit
+            // send_to_quickwi(batch).await;
+            let docs = batch
+                .iter()
+                .map(|doc| serde_json::to_string(&doc).unwrap())
+                .collect::<Vec<String>>();
+            // join on newline
+            let blob = docs.join("\n");
+            let blob = blob.as_bytes();
+            file.write_all(blob).await.unwrap();
+            batch.clear();
+        }
+
         match record.warc_type {
             WARCType::WarcInfo => {
                 //eprintln!("{}", String::from_utf8(record.payload).expect("warcinfo in UTF-8"));
@@ -161,7 +178,8 @@ pub async fn extract_records_and_push_to_quickwit(
                     body,
                     date,
                 };
-                tx.send(doc).await.unwrap();
+                batch.push(doc);
+                // tx.send(doc).await.unwrap();
             }
             _ => {
                 //eprintln!("ignoring record type: {:?}", record.warc_type);
@@ -171,18 +189,19 @@ pub async fn extract_records_and_push_to_quickwit(
     Ok(())
 }
 
-pub async fn send_to_quickwit(mut rx: Receiver<DocJson>) {
-    let url = "http://localhost:7280/api/v1/common_crawl/ingest?commit=force";
-    while let Some(doc) = rx.recv().await {
-        let doc_json = serde_json::to_string(&doc).expect("json serialization failed");
-        let client = reqwest::Client::new()
-            .post(url)
-            .header("Content-Type", "application/json");
-        let resp = client.body(doc_json).send().await;
-        let status = resp.unwrap().status();
-        println!("Push status : {status}");
-    }
-}
+// pub async fn send_to_quickwi(mut rx: Receiver<DocJson>) {
+//     let url = "http://localhost:7280/api/v1/common_crawl/ingest?commit=force";
+//     let batch = 1000;
+
+//     while let Some(doc) = rx.recv().await {
+//         let doc_json = serde_json::to_string(&doc).expect("json serialization failed");
+//         let client = reqwest::Client::new()
+//             .post(url)
+//             .header("Content-Type", "application/json");
+//         let resp = client.body(doc_json).send().await;
+//         let _status = resp.unwrap().status();
+//     }
+// }
 
 pub fn extract_records_and_add_to_index(
     index: &Index,

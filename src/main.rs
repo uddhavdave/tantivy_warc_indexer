@@ -9,9 +9,10 @@ use docopt::Docopt;
 extern crate tantivy;
 use flate2::read::MultiGzDecoder;
 use tantivy::Index;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 use tokio::sync::Semaphore;
-use warc::send_to_quickwit;
+// use warc::send_to_quickwit;
 use warc::DocJson;
 
 mod pubmed;
@@ -64,20 +65,20 @@ async fn main() -> Result<(), std::io::Error> {
     const PER_THREAD_BUF_SIZE: usize = 600 * 1024 * 1024;
 
     println!("Only indexing files: {} - {}", from, to);
-    println!("Index dir: {:?}", index_dir);
+    println!("Out dir: {:?}", index_dir);
     println!("Warc dir: {:?}", warc_dir);
     println!("Threads: {:?}", nthreads);
     println!("");
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<DocJson>(1000);
+    // let (tx, rx) = tokio::sync::mpsc::channel::<DocJson>(1000);
 
     let mut numfiles = 0;
     let mut tasks = Vec::new();
     let semaphore = std::sync::Arc::new(Semaphore::new(16));
 
-    let sender = tokio::spawn(async move {
-        send_to_quickwit(rx).await;
-    });
+    // let sender = tokio::spawn(async move {
+    //     send_to_quickwit(rx).await;
+    // });
 
     while let Some(path) = tokio::fs::read_dir(warc_dir)
         .await
@@ -91,10 +92,12 @@ async fn main() -> Result<(), std::io::Error> {
             continue;
         }
         let filename = path.path().clone();
+        let out_file_path = PathBuf::from(index_dir).join(filename.file_name().unwrap());
+        let out_file = tokio::fs::File::create_new(out_file_path).await?;
 
         let source_type_clone = source_type.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
-        let tx_clone = tx.clone();
+        // let tx_clone = tx.clone();
         tasks.push(tokio::task::spawn(async move {
             let file = File::open(&filename).unwrap();
 
@@ -110,7 +113,7 @@ async fn main() -> Result<(), std::io::Error> {
                                         PER_THREAD_BUF_SIZE,
                                         MultiGzDecoder::new(file),
                                     ),
-                                    tx_clone,
+                                    out_file,
                                 )
                                 .await
                                 .unwrap()
@@ -120,7 +123,7 @@ async fn main() -> Result<(), std::io::Error> {
                     } else if extension == OsStr::new("wet") {
                         warc::extract_records_and_push_to_quickwit(
                             &mut io::BufReader::with_capacity(PER_THREAD_BUF_SIZE, file),
-                            tx_clone,
+                            out_file,
                         )
                         .await
                         .unwrap();
@@ -134,6 +137,6 @@ async fn main() -> Result<(), std::io::Error> {
         }))
     }
 
-    let _ = tokio::join!(sender);
+    // let _ = tokio::join!(sender);
     Ok(())
 }

@@ -133,7 +133,9 @@ pub async fn extract_records_and_push_to_quickwit(
 ) -> io::Result<()> {
     let mut count = 0;
     let mut batch = Vec::new();
-    let mut out_file = tokio::fs::File::create_new(out_file_path).await?;
+    let mut out_file = tokio::fs::File::create_new(&out_file_path)
+        .await
+        .or(tokio::fs::File::open(&out_file_path).await)?;
     while let Some(record) = read_record(&mut reader)? {
         if batch.len() == 1000 {
             // send to quickwit

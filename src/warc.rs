@@ -4,7 +4,7 @@ use std::io;
 use std::io::BufRead;
 
 extern crate tantivy;
-use reqwest::blocking::Client;
+use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io::Read;
@@ -119,13 +119,11 @@ pub struct DocJson {
     date: String,
 }
 
-pub fn extract_records_and_push_to_quickwit(
-    index: &Index,
-    index_writer: &IndexWriter,
-    reader: &mut dyn BufRead,
+pub async fn extract_records_and_push_to_quickwit(
+    mut reader: impl BufRead + Send,
 ) -> io::Result<()> {
     let client = Client::new();
-    while let Some(record) = read_record(reader)? {
+    while let Some(record) = read_record(&mut reader)? {
         match record.warc_type {
             WARCType::WarcInfo => {
                 //eprintln!("{}", String::from_utf8(record.payload).expect("warcinfo in UTF-8"));
@@ -158,7 +156,8 @@ pub fn extract_records_and_push_to_quickwit(
                     .post("http://localhost:7280/api/v1/wikipedia/ingest?commit=force")
                     .header("Content-Type", "application/json")
                     .body(doc_json)
-                    .send();
+                    .send()
+                    .await;
                 let status = resp.unwrap().status();
                 println!("Push status : {status}");
             }

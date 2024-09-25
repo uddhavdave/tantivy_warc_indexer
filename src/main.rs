@@ -9,6 +9,7 @@ use docopt::Docopt;
 extern crate tantivy;
 use flate2::read::MultiGzDecoder;
 use tantivy::Index;
+use tokio::sync::Semaphore;
 
 mod pubmed;
 mod warc;
@@ -44,12 +45,13 @@ struct Args {
     flag_source: SourceType,
 }
 
-fn main() -> Result<(), std::io::Error> {
+#[tokio::main]
+async fn main() -> Result<(), std::io::Error> {
     let args = Docopt::new(USAGE)
         .and_then(|d| d.argv(std::env::args().into_iter()).parse())
         .unwrap_or_else(|e| e.exit());
 
-    let source_type = args.get_str("-s");
+    let source_type = args.get_str("-s").to_string();
     let index_dir = args.get_str("<index>");
     let warc_dir = args.get_str("<warc_dir>");
     let threads = args.get_str("-t");
@@ -64,70 +66,60 @@ fn main() -> Result<(), std::io::Error> {
     println!("Threads: {:?}", nthreads);
     println!("");
 
-    let index_directory = PathBuf::from(index_dir);
-    let index = Index::open_in_dir(&index_directory).expect("Tantivy Index Directory open failed");
-    let mut index_writer = index
-        .writer_with_num_threads(nthreads, nthreads * 4095 * 1024 * 1024)
-        .expect("index writer failed");
-
     let mut numfiles = 0;
-    for path in std::fs::read_dir(warc_dir).unwrap() {
+    let mut tasks = Vec::new();
+    let semaphore = std::sync::Arc::new(Semaphore::new(16));
+    while let Some(path) = tokio::fs::read_dir(warc_dir)
+        .await
+        .unwrap()
+        .next_entry()
+        .await
+        .unwrap()
+    {
         numfiles += 1;
         if numfiles < from || numfiles > to {
             continue;
         }
-        let filename = path.unwrap().path();
-        let file = File::open(&filename).unwrap();
+        let filename = path.path().clone();
 
-        eprintln!("{}\t{}", numfiles, filename.to_string_lossy());
-        match filename.extension() {
-            Some(extension) => {
-                if extension == OsStr::new("gz") {
-                    println!("gzipped {}", source_type);
-                    match source_type {
-                        "WARC" => warc::extract_records_and_push_to_quickwit(
-                            &index,
-                            &index_writer,
-                            &mut io::BufReader::with_capacity(
-                                PER_THREAD_BUF_SIZE,
-                                MultiGzDecoder::new(file),
-                            ),
-                        )?,
-                        "WIKIPEDIA_ABSTRACT" => {
-                            wikipedia_abstract::extract_records_and_add_to_index(
-                                &index,
-                                &index_writer,
-                                &mut io::BufReader::with_capacity(
-                                    PER_THREAD_BUF_SIZE,
-                                    MultiGzDecoder::new(file),
-                                ),
-                            )?
+        let source_type_clone = source_type.clone();
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        tasks.push(tokio::task::spawn(async move {
+            let file = File::open(&filename).unwrap();
+
+            eprintln!("{}\t{}", numfiles, filename.to_string_lossy());
+            match filename.extension() {
+                Some(extension) => {
+                    if extension == OsStr::new("gz") {
+                        println!("gzipped {}", source_type_clone);
+                        match source_type_clone.as_str() {
+                            "WARC" | "WIKIPEDIA_ABSTRACT" | "ENTREZ" => {
+                                warc::extract_records_and_push_to_quickwit(
+                                    &mut io::BufReader::with_capacity(
+                                        PER_THREAD_BUF_SIZE,
+                                        MultiGzDecoder::new(file),
+                                    ),
+                                )
+                                .await
+                                .unwrap()
+                            }
+                            _ => eprintln!("Unknown source type {}", source_type_clone),
                         }
-                        "ENTREZ" => pubmed::extract_records_and_add_to_index(
-                            &index,
-                            &index_writer,
-                            &mut io::BufReader::with_capacity(
-                                PER_THREAD_BUF_SIZE,
-                                MultiGzDecoder::new(file),
-                            ),
-                        )?,
-                        _ => eprintln!("Unknown source type {}", source_type),
+                    } else if extension == OsStr::new("wet") {
+                        warc::extract_records_and_push_to_quickwit(
+                            &mut io::BufReader::with_capacity(PER_THREAD_BUF_SIZE, file),
+                        )
+                        .await
+                        .unwrap();
+                    } else {
+                        eprintln!("Skip file, neither wet nor gz");
                     }
-                } else if extension == OsStr::new("wet") {
-                    warc::extract_records_and_add_to_index(
-                        &index,
-                        &index_writer,
-                        &mut io::BufReader::with_capacity(PER_THREAD_BUF_SIZE, file),
-                    )?;
-                } else {
-                    eprintln!("Skip file, neither wet nor gz");
                 }
+                None => eprintln!("Skip file, neither wet nor gz"),
             }
-            None => eprintln!("Skip file, neither wet nor gz"),
-        }
+            drop(permit);
+        }))
     }
-    index_writer.commit().expect("commit");
-    index_writer.wait_merging_threads().expect("merging");
 
     Ok(())
 }

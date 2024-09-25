@@ -22,3 +22,4 @@ flate2 = { version = "^1.0", features = [
 entrez-rs = { git = "https://github.com/ahcm/entrez-rs" }
 serde-xml-rs = { version = "^0.5" }
 serde_json = "1.0.128"
+tokio = { version = "1.40.0", features = ["full"] }

@@ -145,8 +145,7 @@ pub async fn extract_records_and_push_to_quickwit(
             // join on newline
             let blob = docs.join("\n");
             let blob = blob.as_bytes();
-            out_file.write_all(blob).await.unwrap();
-            out_file.flush().await.unwrap();
+            out_file.write(blob).await.unwrap();
             batch.clear();
         }
 
@@ -189,6 +188,7 @@ pub async fn extract_records_and_push_to_quickwit(
             }
         }
     }
+    out_file.flush().await.unwrap();
     Ok(())
 }
 

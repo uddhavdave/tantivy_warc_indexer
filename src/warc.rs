@@ -4,13 +4,17 @@ use std::io;
 use std::io::BufRead;
 
 extern crate tantivy;
+use reqwest::header::HeaderMap;
 use reqwest::Client;
+use reqwest::Method;
+use reqwest::RequestBuilder;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io::Read;
 use tantivy::Document;
 use tantivy::Index;
 use tantivy::IndexWriter;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 #[derive(Debug)]
 enum WARCType {
@@ -121,8 +125,8 @@ pub struct DocJson {
 
 pub async fn extract_records_and_push_to_quickwit(
     mut reader: impl BufRead + Send,
+    tx: tokio::sync::mpsc::UnboundedSender<DocJson>,
 ) -> io::Result<()> {
-    let client = Client::new();
     while let Some(record) = read_record(&mut reader)? {
         match record.warc_type {
             WARCType::WarcInfo => {
@@ -151,15 +155,7 @@ pub async fn extract_records_and_push_to_quickwit(
                     body,
                     date,
                 };
-                let doc_json = serde_json::to_string(&doc).expect("json serialization failed");
-                let resp = client
-                    .post("http://localhost:7280/api/v1/wikipedia/ingest?commit=force")
-                    .header("Content-Type", "application/json")
-                    .body(doc_json)
-                    .send()
-                    .await;
-                let status = resp.unwrap().status();
-                println!("Push status : {status}");
+                tx.send(doc).unwrap();
             }
             _ => {
                 //eprintln!("ignoring record type: {:?}", record.warc_type);
@@ -169,6 +165,18 @@ pub async fn extract_records_and_push_to_quickwit(
     Ok(())
 }
 
+pub async fn send_to_quickwit(mut rx: UnboundedReceiver<DocJson>) {
+    let url = "http://localhost:7280/api/v1/wikipedia/ingest?commit=force";
+    while let Some(doc) = rx.recv().await {
+        let doc_json = serde_json::to_string(&doc).expect("json serialization failed");
+        let client = reqwest::Client::new()
+            .post(url)
+            .header("Content-Type", "application/json");
+        let resp = client.body(doc_json).send().await;
+        let status = resp.unwrap().status();
+        println!("Push status : {status}");
+    }
+}
 pub fn extract_records_and_add_to_index(
     index: &Index,
     index_writer: &IndexWriter,

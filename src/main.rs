@@ -9,7 +9,10 @@ use docopt::Docopt;
 extern crate tantivy;
 use flate2::read::MultiGzDecoder;
 use tantivy::Index;
+use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 use tokio::sync::Semaphore;
+use warc::send_to_quickwit;
+use warc::DocJson;
 
 mod pubmed;
 mod warc;
@@ -66,9 +69,16 @@ async fn main() -> Result<(), std::io::Error> {
     println!("Threads: {:?}", nthreads);
     println!("");
 
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<DocJson>();
+
     let mut numfiles = 0;
     let mut tasks = Vec::new();
     let semaphore = std::sync::Arc::new(Semaphore::new(16));
+
+    let sender = tokio::spawn(async move {
+        send_to_quickwit(rx).await;
+    });
+
     while let Some(path) = tokio::fs::read_dir(warc_dir)
         .await
         .unwrap()
@@ -84,6 +94,7 @@ async fn main() -> Result<(), std::io::Error> {
 
         let source_type_clone = source_type.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let tx_clone = tx.clone();
         tasks.push(tokio::task::spawn(async move {
             let file = File::open(&filename).unwrap();
 
@@ -99,6 +110,7 @@ async fn main() -> Result<(), std::io::Error> {
                                         PER_THREAD_BUF_SIZE,
                                         MultiGzDecoder::new(file),
                                     ),
+                                    tx_clone,
                                 )
                                 .await
                                 .unwrap()
@@ -108,6 +120,7 @@ async fn main() -> Result<(), std::io::Error> {
                     } else if extension == OsStr::new("wet") {
                         warc::extract_records_and_push_to_quickwit(
                             &mut io::BufReader::with_capacity(PER_THREAD_BUF_SIZE, file),
+                            tx_clone,
                         )
                         .await
                         .unwrap();
@@ -121,5 +134,6 @@ async fn main() -> Result<(), std::io::Error> {
         }))
     }
 
+    let _ = tokio::join!(sender);
     Ok(())
 }

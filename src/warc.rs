@@ -155,9 +155,7 @@ pub fn extract_records_and_push_to_quickwit(
                 };
                 let doc_json = serde_json::to_string(&doc).expect("json serialization failed");
                 let resp = client
-                    .post(
-                        "http://localhost:7280/api/v1/stackoverflow-schemaless/ingest?commit=force",
-                    )
+                    .post("http://localhost:7280/api/v1/wikipedia/ingest?commit=force")
                     .header("Content-Type", "application/json")
                     .body(doc_json)
                     .send();

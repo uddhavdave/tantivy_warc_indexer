@@ -87,7 +87,8 @@ async fn main() -> Result<(), std::io::Error> {
             continue;
         }
         let filename = path.path().clone();
-        let out_file_path = PathBuf::from(index_dir).join(filename.file_name().unwrap());
+        let mut out_file_path = PathBuf::from(index_dir).join(filename.file_stem().unwrap());
+        out_file_path.set_extension("json");
 
         dbg!(&out_file_path);
         let source_type_clone = source_type.clone();
@@ -103,7 +104,7 @@ async fn main() -> Result<(), std::io::Error> {
                         println!("gzipped {}", source_type_clone);
                         match source_type_clone.as_str() {
                             "WARC" | "WIKIPEDIA_ABSTRACT" | "ENTREZ" => {
-                                warc::extract_records_and_push_to_quickwit(
+                                if let Err(e) = warc::extract_records_and_push_to_quickwit(
                                     &mut io::BufReader::with_capacity(
                                         PER_THREAD_BUF_SIZE,
                                         MultiGzDecoder::new(file),
@@ -111,7 +112,13 @@ async fn main() -> Result<(), std::io::Error> {
                                     out_file_path,
                                 )
                                 .await
-                                .unwrap()
+                                {
+                                    eprintln!(
+                                        "Error processing file {}: {:?}",
+                                        filename.to_string_lossy(),
+                                        e
+                                    );
+                                }
                             }
                             _ => eprintln!("Unknown source type {}", source_type_clone),
                         }
@@ -133,7 +140,9 @@ async fn main() -> Result<(), std::io::Error> {
     }
 
     for task in tasks {
-        tokio::join!(task).0.unwrap();
+        if let Err(e) = task.await {
+            eprintln!("Task error: {:?}", e);
+        }
     }
     // let _ = tokio::join!(sender);
     Ok(())

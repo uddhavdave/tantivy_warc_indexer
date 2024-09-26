@@ -16,7 +16,9 @@ use tantivy::Document;
 use tantivy::Index;
 use tantivy::IndexWriter;
 use tokio::fs::File;
+use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
+use tokio::io::BufWriter;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -133,9 +135,13 @@ pub async fn extract_records_and_push_to_quickwit(
 ) -> io::Result<()> {
     let mut count = 0;
     let mut batch = Vec::new();
-    let mut out_file = tokio::fs::File::create_new(&out_file_path)
-        .await
-        .or(tokio::fs::File::open(&out_file_path).await)?;
+    let out_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&out_file_path)
+        .await?;
+    let mut writer = BufWriter::new(out_file);
     while let Some(record) = read_record(&mut reader)? {
         if batch.len() == 1000 {
             // send to quickwit
@@ -147,7 +153,8 @@ pub async fn extract_records_and_push_to_quickwit(
             // join on newline
             let blob = docs.join("\n");
             let blob = blob.as_bytes();
-            out_file.write(blob).await.unwrap();
+            writer.write(blob).await.unwrap();
+            writer.flush().await.unwrap();
             batch.clear();
         }
 
@@ -156,12 +163,12 @@ pub async fn extract_records_and_push_to_quickwit(
                 //eprintln!("{}", String::from_utf8(record.payload).expect("warcinfo in UTF-8"));
             }
             WARCType::Conversion => {
-                let body = std::str::from_utf8(&record.payload).expect("convert to utf8 failed");
+                let body = String::from_utf8(record.payload).expect("convert to utf8 failed");
                 // create a json builder
                 // parse the body into a json object
                 count += 1;
                 if count % 1000 == 0 {
-                    eprintln!(".");
+                    eprint!(".");
                 }
                 let body = body.to_string();
                 let uri = record
@@ -169,7 +176,13 @@ pub async fn extract_records_and_push_to_quickwit(
                     .get("WARC-Target-URI")
                     .expect("get uri")
                     .to_string();
-                let title = body.lines().next().unwrap().to_string();
+                let count = body.chars().count() / 10;
+                let title_len = body
+                    .char_indices()
+                    .nth(std::cmp::min(10, count) as usize)
+                    .unwrap()
+                    .0;
+                let title = body.split_at_checked(title_len).unwrap().0.to_string();
                 let date = record
                     .header
                     .get("WARC-Date")
@@ -190,7 +203,7 @@ pub async fn extract_records_and_push_to_quickwit(
             }
         }
     }
-    out_file.flush().await.unwrap();
+    println!("\nTotal Records of WARC file processed: {}", count);
     Ok(())
 }
 

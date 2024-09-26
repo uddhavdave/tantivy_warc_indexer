@@ -5,22 +5,16 @@ use std::io::BufRead;
 use std::path::PathBuf;
 
 extern crate tantivy;
-use reqwest::header::HeaderMap;
-use reqwest::Client;
-use reqwest::Method;
-use reqwest::RequestBuilder;
+use derive_builder::Builder;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io::Read;
 use tantivy::Document;
 use tantivy::Index;
 use tantivy::IndexWriter;
-use tokio::fs::File;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufWriter;
-use tokio::sync::mpsc::Receiver;
-use tokio::sync::mpsc::UnboundedReceiver;
 
 #[derive(Debug)]
 enum WARCType {
@@ -121,12 +115,12 @@ fn read_record(reader: &mut dyn io::BufRead) -> Result<Option<WARCRecord>, std::
     return Ok(None);
 }
 
-#[derive(Debug, Serialize, Clone, Deserialize)]
+#[derive(Debug, Serialize, Clone, Deserialize, Builder)]
 pub struct DocJson {
-    uri: String,
-    title: String,
-    body: String,
-    date: String,
+    pub uri: String,
+    pub title: String,
+    pub body: String,
+    pub date: String,
 }
 
 pub async fn extract_records_and_push_to_quickwit(
@@ -143,7 +137,7 @@ pub async fn extract_records_and_push_to_quickwit(
         .await?;
     let mut writer = BufWriter::new(out_file);
     while let Some(record) = read_record(&mut reader)? {
-        if batch.len() == 1000 {
+        if batch.len() > 10 {
             // send to quickwit
             // send_to_quickwi(batch).await;
             let docs = batch
@@ -202,6 +196,19 @@ pub async fn extract_records_and_push_to_quickwit(
                 //eprintln!("ignoring record type: {:?}", record.warc_type);
             }
         }
+    }
+
+    if batch.len() > 0 {
+        let docs = batch
+            .iter()
+            .map(|doc| serde_json::to_string(&doc).unwrap())
+            .collect::<Vec<String>>();
+        // join on newline
+        let blob = docs.join("\n");
+        let blob = blob.as_bytes();
+        writer.write(blob).await.unwrap();
+        writer.flush().await.unwrap();
+        batch.clear();
     }
     println!("\nTotal Records of WARC file processed: {}", count);
     Ok(())

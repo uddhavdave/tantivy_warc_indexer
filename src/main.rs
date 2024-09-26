@@ -90,7 +90,6 @@ async fn main() -> Result<(), std::io::Error> {
         let mut out_file_path = PathBuf::from(index_dir).join(filename.file_stem().unwrap());
         out_file_path.set_extension("json");
 
-        dbg!(&out_file_path);
         let source_type_clone = source_type.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         // let tx_clone = tx.clone();
@@ -102,9 +101,43 @@ async fn main() -> Result<(), std::io::Error> {
                 Some(extension) => {
                     if extension == OsStr::new("gz") {
                         println!("gzipped {}", source_type_clone);
-                        match source_type_clone.as_str() {
-                            "WARC" | "WIKIPEDIA_ABSTRACT" | "ENTREZ" => {
+                        match dbg!(source_type_clone.as_str()) {
+                            "WARC" => {
                                 if let Err(e) = warc::extract_records_and_push_to_quickwit(
+                                    &mut io::BufReader::with_capacity(
+                                        PER_THREAD_BUF_SIZE,
+                                        MultiGzDecoder::new(file),
+                                    ),
+                                    out_file_path,
+                                )
+                                .await
+                                {
+                                    eprintln!(
+                                        "Error processing file {}: {:?}",
+                                        filename.to_string_lossy(),
+                                        e
+                                    );
+                                }
+                            }
+                            "WIKIPEDIA_ABSTRACT" => {
+                                if let Err(e) = wikipedia_abstract::extract_records_and_add_to_json(
+                                    &mut io::BufReader::with_capacity(
+                                        PER_THREAD_BUF_SIZE,
+                                        MultiGzDecoder::new(file),
+                                    ),
+                                    out_file_path,
+                                )
+                                .await
+                                {
+                                    eprintln!(
+                                        "Error processing file {}: {:?}",
+                                        filename.to_string_lossy(),
+                                        e
+                                    );
+                                }
+                            }
+                            "ENTREZ" => {
+                                if let Err(e) = pubmed::extract_records_and_add_to_json(
                                     &mut io::BufReader::with_capacity(
                                         PER_THREAD_BUF_SIZE,
                                         MultiGzDecoder::new(file),

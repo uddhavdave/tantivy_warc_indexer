@@ -1,52 +1,84 @@
 use std;
 use std::io;
 use std::io::BufRead;
+use std::path::PathBuf;
 
 extern crate tantivy;
-use tantivy::Document;
-use tantivy::Index;
-use tantivy::IndexWriter;
+use crate::warc::DocJsonBuilder;
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufWriter;
 
 use entrez_rs::parser::pubmed::PubmedArticleSet;
 
-pub fn extract_records_and_add_to_index(index: &Index, index_writer : &IndexWriter, reader : &mut dyn BufRead) -> io::Result<()>
-{
-    let schema = index.schema();
-    //let schema_uri   = schema.get_field("uri").unwrap();
-    let schema_title = schema.get_field("title").unwrap();
-    let schema_body  = schema.get_field("body").unwrap();
-    //let schema_date  = schema.get_field("pubdate").unwrap();
-    //let schema_authors  = schema.get_field("author").unwrap();
-    let schema_journal  = schema.get_field("journal").unwrap();
+pub async fn extract_records_and_add_to_json(
+    mut reader: impl BufRead + Send,
+    path: PathBuf,
+) -> io::Result<()> {
+    let out_file_path = path.with_extension("wka.json");
+    let out_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&out_file_path)
+        .await?;
+    let mut writer = BufWriter::new(out_file);
 
     let mut doc = String::new();
     reader.read_to_string(&mut doc).expect("read file");
     let pm_parsed = PubmedArticleSet::read(&doc);
     let mut count = 0;
-    for pubmed_article in pm_parsed.expect("parsed").articles
-    {
+    let mut batch = Vec::new();
+    for pubmed_article in pm_parsed.expect("parsed").articles {
         count += 1;
-        if count % 1000 == 0 { eprint!("."); }
-
-        let mut doc = Document::default();
-        let article = pubmed_article.medline_citation.expect("medline_citation")
-                 .article.expect("article");
-        if let Some(title) = article.title
-        {
-            doc.add_text(schema_title, title);
+        if count % 1000 == 0 {
+            eprint!(".");
         }
-        doc.add_text(schema_journal, article.journal.expect("journal").title.expect("journal"));
-        if let Some(abstract_text) = article.abstract_text
-        {
-            for text in abstract_text.text
-            {
-                if let Some(value) = text.value
-                {
-                    doc.add_text(schema_body, value);
+
+        if batch.len() > 1000 {
+            let docs = batch
+                .iter()
+                .map(|doc| serde_json::to_string(&doc).unwrap())
+                .collect::<Vec<String>>();
+            // join on newline
+            let blob = docs.join("\n");
+            let blob = blob.as_bytes();
+            writer.write(blob).await.unwrap();
+            writer.flush().await.unwrap();
+            batch.clear();
+        }
+
+        let mut doc = DocJsonBuilder::default();
+        let article = pubmed_article
+            .medline_citation
+            .expect("medline_citation")
+            .article
+            .expect("article");
+        if let Some(title) = article.title {
+            doc.title(title);
+        }
+        if let Some(abstract_text) = article.abstract_text {
+            for text in abstract_text.text {
+                if let Some(value) = text.value {
+                    doc.body(value);
                 }
             }
         }
-        index_writer.add_document(doc);
+        doc.date("".into());
+        doc.uri("".into());
+        batch.push(doc.build().unwrap());
+    }
+    if batch.len() > 0 {
+        let docs = batch
+            .iter()
+            .map(|doc| serde_json::to_string(&doc).unwrap())
+            .collect::<Vec<String>>();
+        // join on newline
+        let blob = docs.join("\n");
+        let blob = blob.as_bytes();
+        writer.write(blob).await.unwrap();
+        writer.flush().await.unwrap();
+        batch.clear();
     }
     println!("\nTotal Records of WARC file processed: {}", count);
     Ok(())
